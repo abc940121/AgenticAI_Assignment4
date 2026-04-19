@@ -1,0 +1,25 @@
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# === Large Data & Databases (DO NOT UPLOAD) ===
+ncu_regulations.db
+hf_model_cache/
+
+# === Environment & Secrets ===
+.env
+
+# === OS Specific ===
+.DS_Store
+Thumbs.db
+
+# === Development Artifacts ===
+archive/
+*.log
+.vscode/
+.idea/
