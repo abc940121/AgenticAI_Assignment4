@@ -1,57 +1,91 @@
 # Assignment 4: NCU Regulation Knowledge Graph & QA System
 
-This repository contains the implementation for Assignment 4: Building a RAG-based Knowledge Graph Question Answering System. The project aims to accurately answer questions regarding school regulations using Neo4j and a local LLM (`Qwen2.5-3B-Instruct`).
+This repository contains the implementation for Assignment 4: Building a RAG-based Knowledge Graph Question Answering System. The project accurately answers questions regarding NCU school regulations using Neo4j and a local LLM (`Qwen2.5-3B-Instruct`).
 
 ## 📊 Performance
-- **Evaluation Score**: 19/20 (95.0% Accuracy)
-- **Time to evaluate**: ~10-15 minutes (Local CPU inference)
+- **Evaluation Score**: 14/20 (70.0% Accuracy)
+- **Build Time**: ~7 seconds (well within the 300-second limit)
+- **Inference Time**: ~10-15 minutes for all 20 questions (Local CPU inference)
 
 ## 🏗️ System Architecture & Key Features
 
-This project moves beyond a simple baseline implementation by utilizing several advanced Retrieval-Augmented Generation (RAG) and database techniques.
-
-### 1. Robust KG Construction (`build_kg.py`)
-- **Graph Schema**: Data is transformed into a clean `(Regulation)-[:HAS_ARTICLE]->(Article)-[:CONTAINS_RULE]->(Rule)` structure.
-- **LLM-Driven Extraction**: Instead of regex splitting, the local `Qwen2.5-3B` model is prompted to meticulously extract structured `action` and `result` conditions from raw administrative text and store them as `Rule` nodes.
+### 1. KG Construction (`build_kg.py`)
+- **Graph Schema**: Data is structured as `(Regulation)-[:HAS_ARTICLE]->(Article)-[:CONTAINS_RULE]->(Rule)`.
+- **Deterministic Rule Extraction**: Rules are extracted from article text using a **regex-based heuristic parser** instead of LLM inference. This approach uses three strategies:
+  - **Strategy A** – Numbered list splitting (e.g., `1. xxx 2. xxx`)
+  - **Strategy B** – Conditional sentence pattern matching (`shall`, `must`, `may`, `If...`)
+  - **Strategy C** – Full-article fallback for articles that don't match the above patterns
+- **Why deterministic?** Sequential LLM extraction over 159 articles would take 8–13 minutes, exceeding the 300-second grader time-limit. The regex parser completes the same task in **< 10 seconds**.
+- **Rule Classification**: Each extracted Rule is automatically labelled as `penalty`, `rights`, `exception`, or `requirement` based on keyword matching.
 
 ### 2. Dual-Strategy Retrieval (`query_system.py`)
-- **Full-Text Indexing (Lucene)**: Uses native Neo4j `CALL db.index.fulltext.queryNodes` to search both the raw Article paragraphs (`article_content_idx`) and the extracted Rules (`rule_idx`).
-- **Context Prioritization**: Fetches the exact full-text Articles first to prevent the loss of highly specific numeric data (e.g., "128 credits" or "NTD 200"), using the simplified Rule nodes as a supplementary context.
+- **Full-Text Indexing (Lucene)**: Uses Neo4j's `CALL db.index.fulltext.queryNodes` to search:
+  1. **Article content** (`article_content_idx`) — prioritised first to preserve exact numeric facts (fees, credits, durations)
+  2. **Rule nodes** (`rule_idx`) — used as supplementary context
+- **Context Grouping**: Retrieved evidence is grouped by `[Regulation - Article]` before being passed to the LLM, reducing redundancy and improving readability.
+- **Increased Context Window**: Article text is passed up to **1,000 characters** per article (previously 500) to avoid cutting off specific numbers and clauses.
 
 ### 3. Query Expansion / Synonym Mapping
-To resolve the classic "Vocabulary Mismatch" problem inherent in retrieval systems, the code implements dynamic Query Expansion logic:
-- `bachelor's / degree` $\rightarrow$ `undergraduate`, `four`, `years`
-- `expelled` $\rightarrow$ `withdraw`
-- `poor grades` $\rightarrow$ `failed`, `half`
+To address the classic "Vocabulary Mismatch" problem in retrieval systems, the `_build_fulltext_query` function applies dynamic keyword expansion:
 
-This bridge allows the system to perfectly map user slang to formal regulatory terminology, solving questions that base BM25 ranking algorithms normally miss.
+| Question phrasing | Expanded search terms |
+|---|---|
+| `bachelor's / degree` | `undergraduate`, `four`, `years` |
+| `expelled / dismissed` | `withdraw` |
+| `poor grades` | `failed`, `half` |
+| `forgetting student ID` | `bringing`, `deducted` |
 
-### 4. Cross-Platform Hardening
-- Handles `cp950` Windows Console decoding errors gracefully by forcefully wrapping `sys.stdout` in UTF-8, ensuring `auto_test.py` doesn't crash when printing complex LLM Unicode characters.
+### 4. Prompt Engineering
+The `generate_answer` prompt explicitly instructs the model:
+- To **never say "I don't know"** if numeric facts are visible in the evidence
+- To quote the **exact number or fact** found in the text
+- To **cite the source** regulation and article number
+
+### 5. Cross-Platform Hardening
+- Added `sys.stdout.reconfigure(encoding='utf-8')` to prevent Windows `cp950` codec crashes when the LLM outputs special Unicode characters during `auto_test.py` evaluation.
 
 ---
 
 ## 💻 How to Run
 
-### 1. Install Dependencies
+### Prerequisites
+- Python 3.11
+- Neo4j (local Desktop or Docker)
+- `ncu_regulations.db` (SQLite source file)
+
+### 1. Start Neo4j
+**Docker:**
+```bash
+docker run -d --name neo4j -p 7474:7474 -p 7687:7687 -e NEO4J_AUTH=neo4j/password neo4j:latest
+```
+**Neo4j Desktop:** Start your local instance and ensure it is RUNNING.
+
+### 2. Configure Environment
+Create a `.env` file in the project root:
+```
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=password
+```
+
+### 3. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Build the Knowledge Graph
-This script will read `ncu_regulations.db` and push the nodes/relationships to your local Neo4j instance at `bolt://localhost:7687`.
+### 4. Build the Knowledge Graph
+Reads `ncu_regulations.db` and populates Neo4j with Regulation, Article, and Rule nodes. Completes in ~7 seconds.
 ```bash
 python build_kg.py
 ```
 
-### 3. Interactive QA (Optional)
-You can directly interact with the system via the command line:
+### 5. Interactive QA (Optional)
 ```bash
 python query_system.py
 ```
 
-### 4. Run Automated Evaluation
-Runs the 20 pre-defined questions and utilizes the LLM-as-a-Judge mechanism to verify the answers. 
+### 6. Run Automated Evaluation
+Runs 20 pre-defined questions with LLM-as-a-Judge scoring.
 ```bash
 python auto_test.py
 ```
@@ -59,8 +93,12 @@ python auto_test.py
 ---
 
 ## 📂 File Structure
-- `build_kg.py`: Rebuilds the Neo4j Knowledge Graph.
-- `query_system.py`: Holds the main RAG retrieval logic, Query Expansion, and LLM formatting.
-- `llm_loader.py`: Singleton-style caching loader for Transformers models.
-- `auto_test.py`: The evaluation script.
-- `requirements.txt`: Python package list.
+
+| File | Description |
+|------|-------------|
+| `build_kg.py` | Builds the Neo4j Knowledge Graph using deterministic rule extraction |
+| `query_system.py` | Core RAG pipeline: retrieval, query expansion, and answer generation |
+| `llm_loader.py` | Singleton-style caching loader for Transformers models |
+| `auto_test.py` | Automated evaluation script (20 questions, LLM-as-a-Judge) |
+| `requirements.txt` | Python package dependencies |
+| `.gitignore` | Excludes `.venv`, model cache, `.env`, and database files |
